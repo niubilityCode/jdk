@@ -530,6 +530,7 @@ static char* get_user_name_slow(int vmid, int nspid, TRAPS) {
   int searchpid;
   char* tmpdirname = (char *)os::get_temp_directory();
 #if defined(LINUX)
+  char buffer[MAXPATHLEN + 1];
   assert(strlen(tmpdirname) == 4, "No longer using /tmp - update buffer size");
 
   // On Linux, if nspid != -1, look in /proc/{vmid}/root/tmp for directories
@@ -537,7 +538,6 @@ static char* get_user_name_slow(int vmid, int nspid, TRAPS) {
   if (nspid == -1) {
     searchpid = vmid;
   } else {
-    char buffer[MAXPATHLEN + 1];
     jio_snprintf(buffer, MAXPATHLEN, "/proc/%d/root%s", vmid, tmpdirname);
     tmpdirname = buffer;
     searchpid = nspid;
@@ -1023,18 +1023,23 @@ static char* mmap_create_shared(size_t size) {
   return mapAddress;
 }
 
-// release a named shared memory region
+// release a named shared memory region that was mmap-ed.
 //
 static void unmap_shared(char* addr, size_t bytes) {
-#if defined(_AIX)
-  // Do not rely on os::reserve_memory/os::release_memory to use mmap.
-  // Use os::reserve_memory/os::release_memory for PerfDisableSharedMem=1, mmap/munmap for PerfDisableSharedMem=0
-  if (::munmap(addr, bytes) == -1) {
-    warning("perfmemory: munmap failed (%d)\n", errno);
+  int res;
+  if (MemTracker::tracking_level() > NMT_minimal) {
+    // Note: Tracker contains a ThreadCritical.
+    Tracker tkr(Tracker::release);
+    res = ::munmap(addr, bytes);
+    if (res == 0) {
+      tkr.record((address)addr, bytes);
+    }
+  } else {
+    res = ::munmap(addr, bytes);
   }
-#else
-  os::release_memory(addr, bytes);
-#endif
+  if (res != 0) {
+    log_info(os)("os::release_memory failed (" PTR_FORMAT ", " SIZE_FORMAT ")", p2i(addr), bytes);
+  }
 }
 
 // create the PerfData memory region in shared memory.
@@ -1311,7 +1316,7 @@ void PerfMemory::attach(const char* user, int vmid, PerfMemoryMode mode, char** 
 // the indicated process's PerfData memory region from this
 // process's address space.
 //
-void PerfMemory::detach(char* addr, size_t bytes, TRAPS) {
+void PerfMemory::detach(char* addr, size_t bytes) {
 
   assert(addr != 0, "address sanity check");
   assert(bytes > 0, "capacity sanity check");
