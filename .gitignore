@@ -1,0 +1,9 @@
+.DS_Store
+.idea/
+.ignore
+.vscode/
+
+jdk/
+make/.DS_Store
+src/.DS_Store
+test/*

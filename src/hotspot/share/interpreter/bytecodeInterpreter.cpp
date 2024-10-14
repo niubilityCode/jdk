@@ -1773,13 +1773,13 @@ run:
       /* monitorenter and monitorexit for locking/unlocking an object */
 
       CASE(_monitorenter): {
-        oop lockee = STACK_OBJECT(-1);
+        oop lockee = STACK_OBJECT(-1); // 对哪个对象上锁
         // derefing's lockee ought to provoke implicit null check
         CHECK_NULL(lockee);
         // find a free monitor or one already allocated for this object
         // if we find a matching object then we need a new monitor
         // since this is recursive enter
-        BasicObjectLock* limit = istate->monitor_base();
+        BasicObjectLock* limit = istate->monitor_base(); // istate是解释器。
         BasicObjectLock* most_recent = (BasicObjectLock*) istate->stack_base();
         BasicObjectLock* entry = NULL;
         while (most_recent != limit ) {
@@ -1792,7 +1792,7 @@ run:
           int success = false;
           uintptr_t epoch_mask_in_place = (uintptr_t)markOopDesc::epoch_mask_in_place;
 
-          markOop mark = lockee->mark();
+          markOop mark = lockee->mark(); // 对象头部信息
           intptr_t hash = (intptr_t) markOopDesc::no_hash;
           // implies UseBiasedLocking
           if (mark->has_bias_pattern()) {
@@ -1800,9 +1800,16 @@ run:
             uintptr_t anticipated_bias_locking_value;
             thread_ident = (uintptr_t)istate->thread();
             anticipated_bias_locking_value =
+            // 异或操作: 比较 ((uintptr_t)lockee->klass()->prototype_header() | thread_ident) 与 mark是否相等
+            //   若相等,则异或结果为  0
+            //   若不相等,则异或结果不为 0
+            // 非运算: ~((uintptr_t) markOopDesc::age_mask_in_place), 除了age的bit位=0,其余位置=1 
+            
+            // 以上两个结果相与: 设置相与结果中的 age位=0, 即排除age位的干扰
               (((uintptr_t)lockee->klass()->prototype_header() | thread_ident) ^ (uintptr_t)mark) &
               ~((uintptr_t) markOopDesc::age_mask_in_place);
 
+            // 当前线程已经得到了偏向锁, 则设置 success=true
             if  (anticipated_bias_locking_value == 0) {
               // already biased towards this thread, nothing to do
               if (PrintBiasedLockingStatistics) {
@@ -1810,17 +1817,28 @@ run:
               }
               success = true;
             }
+
+            // 若有偏向锁了, 且上一个判断没走说明 当前线程没有获取 偏向锁: 则肯定是别的线程获取了偏向锁。
+            // 即发生激烈竞争了，偏向锁满足不了多线程的竞争需求了，所以需要锁升级了。
+            // 所以: 1. 撤销偏向锁; 2.不设置success = true，即默认success = false
             else if ((anticipated_bias_locking_value & markOopDesc::biased_lock_mask_in_place) != 0) {
               // try revoke bias
+              // lockee: 需要上锁的对象; 
+              // klass(): lockee的父类;
+              // prototype_header(): lockee的父类的头信息
               markOop header = lockee->klass()->prototype_header();
               if (hash != markOopDesc::no_hash) {
                 header = header->copy_set_hash(hash);
               }
+              // header 与 mark都是markOop类型，从侧面证明了java中类是对象的模版, 对象是类的实例。类的头和对象的头占用空间一样大，都是size(markOop)
+              // 尝试复原对象的头部信息: 把类的header -> copy到对象的header上
               if (lockee->cas_set_mark(header, mark) == mark) {
                 if (PrintBiasedLockingStatistics)
                   (*BiasedLocking::revoked_lock_entry_count_addr())++;
               }
             }
+
+            // 计算 anticipated_bias_locking_value 与 epoch位 相与的结果
             else if ((anticipated_bias_locking_value & epoch_mask_in_place) !=0) {
               // try rebias
               markOop new_header = (markOop) ( (intptr_t) lockee->klass()->prototype_header() | thread_ident);
