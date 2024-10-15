@@ -1838,7 +1838,9 @@ run:
               }
             }
 
-            // 计算 anticipated_bias_locking_value 与 epoch位 相与的结果
+            // 计算 anticipated_bias_locking_value 与 epoch位 相与的结果.
+            // 若不为0, 则相当于epoch向前滚动了, 而epoch向前滚动的前提是偏向锁都撤销了。所以重新偏向试试呗。
+            // 这里的epoch是从 kclass的header中取出的，也间接说明了epoch的值设置到了kclass的头部了。
             else if ((anticipated_bias_locking_value & epoch_mask_in_place) !=0) {
               // try rebias
               markOop new_header = (markOop) ( (intptr_t) lockee->klass()->prototype_header() | thread_ident);
@@ -1855,6 +1857,9 @@ run:
               success = true;
             }
             else {
+              // anonymously biased: 匿名偏向锁, 偏向锁机制已经被打开了，即bit位已经被设置了:
+              // 即[JavaThread* | epoch | age | 1 | 01] 中的JavaThread* 为空，但是后三位是101.
+              // 但是还没有来得及 被别的线程偏向。此时该偏向锁处于中间的空当期. 则称为: 匿名偏向锁
               // try to bias towards thread in case object is anonymously biased
               markOop header = (markOop) ((uintptr_t) mark & ((uintptr_t)markOopDesc::biased_lock_mask_in_place |
                                                               (uintptr_t)markOopDesc::age_mask_in_place |
@@ -1865,6 +1870,7 @@ run:
               markOop new_header = (markOop) ((uintptr_t) header | thread_ident);
               // debugging hint
               DEBUG_ONLY(entry->lock()->set_displaced_header((markOop) (uintptr_t) 0xdeaddead);)
+              // 有可能同时有多个线程 进来对匿名偏向锁 进行偏向, 所以这里cas保证原子性，只有一个能成功。
               if (lockee->cas_set_mark(new_header, header) == header) {
                 if (PrintBiasedLockingStatistics)
                   (* BiasedLocking::anonymously_biased_lock_entry_count_addr())++;
@@ -1878,9 +1884,14 @@ run:
 
           // traditional lightweight locking
           if (!success) {
+            // 将对象原始 头部信息去掉 lock信息: displaced，保存在线程栈的容器entry中
             markOop displaced = lockee->mark()->set_unlocked();
             entry->lock()->set_displaced_header(displaced);
-            bool call_vm = UseHeavyMonitors;
+            bool call_vm = UseHeavyMonitors; // 永远为true
+            // 尝试CAS将对象头部替换为 线程栈的容器entry 的地址. 若成功: 则轻量级锁上锁成功; 否则: 上锁失败.
+            // 失败的情况下再看 is_lock_owned 是否为true:
+            //    若true，则代表当前线程已经获取过轻量级锁了，entry无需再保存对象头部. 此为锁重入现场景。
+            //    若false, 则代表当前线程彻底拿轻量级锁失败，则调用 monitorenter 升级为重量级锁即可。
             if (call_vm || lockee->cas_set_mark((markOop)entry, displaced) != displaced) {
               // Is it simple recursive case?
               if (!call_vm && THREAD->is_lock_owned((address) displaced->clear_lock_bits())) {
