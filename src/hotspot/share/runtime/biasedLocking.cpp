@@ -628,6 +628,7 @@ BiasedLocking::Condition BiasedLocking::revoke_and_rebias(Handle obj, bool attem
   // update the heuristics because doing so may cause unwanted bulk
   // revocations (which are expensive) to occur.
   markOop mark = obj->mark();
+  // is_biased_anonymously()=true: 则klass头部目前设置的是 匿名偏向锁的状态值。
   if (mark->is_biased_anonymously() && !attempt_rebias) {
     // We are probably trying to revoke the bias of this object due to
     // an identity hash code computation. Try to revoke the bias
@@ -637,12 +638,14 @@ BiasedLocking::Condition BiasedLocking::revoke_and_rebias(Handle obj, bool attem
     // the bias of the object.
     markOop biased_value       = mark;
     markOop unbiased_prototype = markOopDesc::prototype()->set_age(mark->age());
+    // attempt_rebias, 代表不需要重偏向，撤销偏向锁即可。
     markOop res_mark = obj->cas_set_mark(unbiased_prototype, mark);
     if (res_mark == biased_value) {
+      // 撤销偏向锁的标识
       return BIAS_REVOKED;
     }
-  } else if (mark->has_bias_pattern()) {
-    Klass* k = obj->klass();
+  } else if (mark->has_bias_pattern()) {  // 开启了偏向锁
+    Klass* k = obj->klass(); // obj: java new出来的对象; obj->klass(): java new的对象的class
     markOop prototype_header = k->prototype_header();
     if (!prototype_header->has_bias_pattern()) {
       // This object has a stale bias from before the bulk revocation
