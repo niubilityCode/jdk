@@ -1908,6 +1908,7 @@ run:
         }
       }
 
+      // 锁释放包括三种释放场景：偏向锁的释放、轻量级锁的释放、重量级锁的释放
       CASE(_monitorexit): {
         oop lockee = STACK_OBJECT(-1);
         CHECK_NULL(lockee);
@@ -1920,10 +1921,10 @@ run:
             BasicLock* lock = most_recent->lock();
             markOop header = lock->displaced_header();
             most_recent->set_obj(NULL);
-            if (!lockee->mark()->has_bias_pattern()) {
+            if (!lockee->mark()->has_bias_pattern()) { // 若为偏向锁，则任何事情都无需处理。
               bool call_vm = UseHeavyMonitors;
               // If it isn't recursive we either must swap old header or call the runtime
-              if (header != NULL || call_vm) {
+              if (header != NULL || call_vm) { // 若为轻量级锁(BasicObjectLock是在栈上，后进先出的原则。可能由于轻量级锁的锁重入导致存在多个BasicObjectLock对象，则只有最后一个出来的BasicObjectLock[栈底的(第一次拿到轻量级锁的BasicObjectLock)]的此处的 header 值才不为Null，其他的BasicObjectLock的 此处的 header 值都为Null，因为只需要存一次即可。后续的重入无需再存)
                 markOop old_header = markOopDesc::encode(lock);
                 if (call_vm || lockee->cas_set_mark(header, old_header) != old_header) {
                   // restore object for the slow case

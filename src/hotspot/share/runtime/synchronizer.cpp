@@ -265,6 +265,7 @@ void ObjectSynchronizer::fast_enter(Handle obj, BasicLock* lock,
                                     bool attempt_rebias, TRAPS) {
   if (UseBiasedLocking) {
     if (!SafepointSynchronize::is_at_safepoint()) {
+      // 就当目前不是safepoint线程安全点（我们的关注点不在于safepoint），看该分支学习上锁流程即可。
       BiasedLocking::Condition cond = BiasedLocking::revoke_and_rebias(obj, attempt_rebias, THREAD);
       if (cond == BiasedLocking::BIAS_REVOKED_AND_REBIASED) {
         return;
@@ -350,10 +351,13 @@ void ObjectSynchronizer::slow_enter(Handle obj, BasicLock* lock, TRAPS) {
     }
     // Fall through to inflate() ...
   } else if (mark->has_locker() &&
-             THREAD->is_lock_owned((address)mark->locker())) {
+             THREAD->is_lock_owned((address)mark->locker())) { // 轻量级锁的锁重入
     assert(lock != mark->locker(), "must not re-lock the same lock");
     assert(lock != (BasicLock*)obj->mark(), "don't relock with same BasicLock");
-    lock->set_displaced_header(NULL);
+    // 轻量级锁的锁重入：
+    // 1. 则该线程之前第一次获取轻量级锁的时候已经 设置锁对象obj的头部指向 basicObjectLock_1 的地址了，且设置了 basicObjectLock_1 的set_displaced_header=锁对象obj的头部信息了
+    // 2. 该线程后续 轻量级锁的锁重入的时候 也会在栈上申请一个新的basicObjectLock_2，此时无需保存set_displaced_header了，因为basicObjectLock_1上已经保存了。
+    lock->set_displaced_header(NULL); 
     return;
   }
 

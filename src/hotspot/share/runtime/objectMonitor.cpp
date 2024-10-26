@@ -424,6 +424,8 @@ void ObjectMonitor::enter(TRAPS) {
 int ObjectMonitor::TryLock(Thread * Self) {
   void * own = _owner;
   if (own != NULL) return 0;
+  // 由于可能存在多个线程同时上重量级锁，所以需要cas；
+  // 但是解锁的时候必然是拿到了重量级锁，才可以解锁，所以解锁流程无需cas
   if (Atomic::replace_if_null(Self, &_owner)) {
     // Either guarantee _recursions == 0 or set _recursions = 0.
     assert(_recursions == 0, "invariant");
@@ -570,9 +572,12 @@ void ObjectMonitor::EnterI(TRAPS) {
       }
     } else {
       TEVENT(Inflated enter - park UNTIMED);
+      // 当前线程拿不到重量级锁，所以park，进入睡眠
       Self->_ParkEvent->park();
     }
 
+    // 当线程被唤醒之后，才会走到这一步。则继续TryLock 去抢重量级锁
+    // 且只有拿到 重量级锁，才会跳出当前for(;;)循环
     if (TryLock(Self) > 0) break;
 
     // The lock is still contested.
@@ -624,6 +629,7 @@ void ObjectMonitor::EnterI(TRAPS) {
   //   guarantee (((oop)(object()))->mark() == markOopDesc::encode(this), "invariant") ;
   // but as we're at a safepoint that's not safe.
 
+  // 能走到这一步，说明当前线程已经拿到重量级锁了。则需要把自身从 EntryList 队列 或者CXQ队列中移除
   UnlinkAfterAcquire(Self, &node);
   if (_succ == Self) _succ = NULL;
 
@@ -785,7 +791,7 @@ void ObjectMonitor::UnlinkAfterAcquire(Thread *Self, ObjectWaiter *SelfNode) {
   assert(_owner == Self, "invariant");
   assert(SelfNode->_thread == Self, "invariant");
 
-  if (SelfNode->TState == ObjectWaiter::TS_ENTER) {
+  if (SelfNode->TState == ObjectWaiter::TS_ENTER) { //若状态==ObjectWaiter::TS_ENTER,则代表在EntryList队列中，则从中移除即可
     // Normal case: remove Self from the DLL EntryList .
     // This is a constant-time operation.
     ObjectWaiter * nxt = SelfNode->_next;
@@ -796,7 +802,7 @@ void ObjectMonitor::UnlinkAfterAcquire(Thread *Self, ObjectWaiter *SelfNode) {
     assert(nxt == NULL || nxt->TState == ObjectWaiter::TS_ENTER, "invariant");
     assert(prv == NULL || prv->TState == ObjectWaiter::TS_ENTER, "invariant");
     TEVENT(Unlink from EntryList);
-  } else {
+  } else { // 否则一定在CXQ队列中，此时从CXQ队列中移除即可
     assert(SelfNode->TState == ObjectWaiter::TS_CXQ, "invariant");
     // Inopportune interleaving -- Self is still on the cxq.
     // This usually means the enqueue of self raced an exiting thread.
@@ -905,7 +911,7 @@ void ObjectMonitor::UnlinkAfterAcquire(Thread *Self, ObjectWaiter *SelfNode) {
 void ObjectMonitor::exit(bool not_suspended, TRAPS) {
   Thread * const Self = THREAD;
   if (THREAD != _owner) {
-    if (THREAD->is_lock_owned((address) _owner)) {
+    if (THREAD->is_lock_owned((address) _owner)) { //轻量级锁，被升级为重量级锁了
       // Transmute _owner from a BasicLock pointer to a Thread address.
       // We don't need to hold _mutex for this transition.
       // Non-null to Non-null is safe as long as all readers can
@@ -929,7 +935,7 @@ void ObjectMonitor::exit(bool not_suspended, TRAPS) {
     }
   }
 
-  if (_recursions != 0) {
+  if (_recursions != 0) { // 重量级锁的锁重入，则直接_recursions--即可，因为basicObjectLock的个数有限，所以这里_recursions无需做溢出检查，一定不溢出。
     _recursions--;        // this is simple recursive enter
     TEVENT(Inflated exit - recursive);
     return;
@@ -965,6 +971,8 @@ void ObjectMonitor::exit(bool not_suspended, TRAPS) {
       // in massive wasteful coherency traffic on classic SMP systems.
       // Instead, I use release_store(), which is implemented as just a simple
       // ST on x64, x86 and SPARC.
+      // 只要把把_owner设置成NULL了，则代表释放了锁，其他线程就可以抢锁了
+      // 释放锁无需 加锁，因为单线程操作，因为只有获取锁的线程才可以 释放锁。与java的AQS中释放锁更改state变量一样无需加锁。
       OrderAccess::release_store(&_owner, (void*)NULL);   // drop the lock
       OrderAccess::storeload();                        // See if we need to wake a successor
       if ((intptr_t(_EntryList)|intptr_t(_cxq)) == 0 || _succ != NULL) {
@@ -1150,7 +1158,7 @@ void ObjectMonitor::exit(bool not_suspended, TRAPS) {
       // Given all that, we have to tolerate the circumstance where "w" is
       // associated with Self.
       assert(w->TState == ObjectWaiter::TS_ENTER, "invariant");
-      ExitEpilog(Self, w);
+      ExitEpilog(Self, w); // ExitEpilog() 就是唤醒_EntryList队列中的等到线程，然后退出当前线程，与java中的AQS一样
       return;
     }
 
