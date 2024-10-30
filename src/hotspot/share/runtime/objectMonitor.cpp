@@ -1473,6 +1473,10 @@ void ObjectMonitor::wait(jlong millis, bool interruptible, TRAPS) {
   ObjectWaiter node(Self);
   node.TState = ObjectWaiter::TS_WAIT;
   Self->_ParkEvent->reset();
+  // 全屏障，保证:
+  // 1. 下面的指令 不会被 编译器编译到上面
+  // 2. CPU不会真正乱序执行下面 和 上面的代码
+  // 3. 执行完fence,会刷store buffer和invalid queue。保证发布/订阅模型，若下面的代码可见，则上面的代码一定也可见。
   OrderAccess::fence();          // ST into Event; membar ; LD interrupted-flag
 
   // Enter the waiting queue, which is a circular doubly linked list in this case
@@ -1483,10 +1487,23 @@ void ObjectMonitor::wait(jlong millis, bool interruptible, TRAPS) {
   // so we use a simple spin-lock instead of a heavier-weight blocking lock.
 
   Thread::SpinAcquire(&_WaitSetLock, "WaitSet - add");
+  // 进入等待队列, 然后释放锁。跟 ReentrantLock 中的 Condition 等待队列一模一样的原理。
+  // 1. ReentrantLock.Condition: 先拿 ReentrantLock 互斥锁，然后一看条件不满足，则进入 Condition 等待队列，然后释放 ReentrantLock互斥锁。就安静的在 Condition 队列中等待被别的线程唤醒。
+  // 2. objectMonitor.wait: 一样的原理，只不过是 objectMonitor 对象内部自带一个等待队列 _WaitSet，无需显示new一个。
+  //    objectMonitor总共有三个队列: _cxq, _EntryList, _WaitSet
+  //      synchronized(obj){do something} 拿锁时: 若升级为重量级锁，则涉及到: _cxq, _EntryList
+  //      synchronized(obj) {obj.wait} 拿锁且等待时: 肯定会升级为重量级锁，涉及到:  _cxq, _EntryList, _WaitSet
+
   AddWaiter(&node);
   Thread::SpinRelease(&_WaitSetLock);
 
+  // SyncFlags 在 globals.hpp 中默认true
   if ((SyncFlags & 4) == 0) {
+    // 设置 _Responsible ==Null, 
+    // 1. 因为这是 synchronized 的wait()流程，也需要拿到重量级锁。
+    // 2. 而正常的 synchronized 包裹的方法也可能需要拿到重量级锁，
+    // 这是两个流程，流程1会影响 _Responsible 对于流程2的优化，因为一旦流程2 设置 _Responsible == 流程2的线程，则会使用带时间的park进行睡眠，是一个优化措施。
+    // 但是若流程1拿到锁了，则流程2中的带时间的park睡眠无意义了，所以取消之，即取消流程2中 _Responsible的优化流程。
     _Responsible = NULL;
   }
   intptr_t save = _recursions; // record the old recursion count

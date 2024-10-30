@@ -158,7 +158,7 @@ class ObjectMonitor {
  private:
   ObjectWaiter * volatile _cxq;     // LL of recently-arrived threads blocked on entry.
   Thread * volatile _succ;          // Heir presumptive thread - used for futile wakeup throttling
-  Thread * volatile _Responsible;
+  Thread * volatile _Responsible; // 目的: 让_Responsible上保存的线程 在苦苦拿不到锁的时候，使用带时间的park，方便下次快速被OS唤醒；而不是其他霸道锁的线程唤醒。
 
   volatile int _Spinner;            // for exit->spinner handoff optimization
   volatile int _SpinDuration;
