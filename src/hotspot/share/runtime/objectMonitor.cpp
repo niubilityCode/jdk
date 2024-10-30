@@ -562,6 +562,9 @@ void ObjectMonitor::EnterI(TRAPS) {
     }
 
     // park self
+    // _Responsible: 优化操作，若 nxt == NULL && _EntryList == NULL
+    // 则Atomic::replace_if_null(Self, &_Responsible); 即当前线程A没抢到锁，且CXQ和EntryList==NULL还没有其他任何线程，则先记录下_Responsible=当前线程A
+    // park的时候用带时间的park阻塞，这样有可能之前获取锁的线程B刚已释放锁，当前线程A立马被操作系统唤醒，而不是需要等待线程B执行一段自己的代码之后再唤醒。提高效率了。属实是优化操作
     if (_Responsible == Self || (SyncFlags & 1)) {
       TEVENT(Inflated enter - park TIMED);
       Self->_ParkEvent->park((jlong) recheckInterval);
@@ -634,6 +637,7 @@ void ObjectMonitor::EnterI(TRAPS) {
   if (_succ == Self) _succ = NULL;
 
   assert(_succ != Self, "invariant");
+  // 若 _Responsible 是当前线程，则由于当前线程已经唤醒，且已经从CXQ或EntryList断链了。因此_Responsible reset null恢复原样即可
   if (_Responsible == Self) {
     _Responsible = NULL;
     OrderAccess::fence(); // Dekker pivot-point
