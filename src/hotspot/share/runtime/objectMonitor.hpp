@@ -152,10 +152,12 @@ class ObjectMonitor {
   void *  volatile _owner;          // pointer to owning thread OR BasicLock
   volatile jlong _previous_owner_tid;  // thread id of the previous owner of the monitor
   volatile intptr_t  _recursions;   // recursion count, 0 for first entry
+  // 释放锁时的唤醒队列，唤醒 _EntryList 中的线程
   ObjectWaiter * volatile _EntryList; // Threads blocked on entry or reentry.
                                       // The list is actually composed of WaitNodes,
                                       // acting as proxies for Threads.
  private:
+  // _cxq 抢锁的竞争队列
   ObjectWaiter * volatile _cxq;     // LL of recently-arrived threads blocked on entry.
   Thread * volatile _succ;          // Heir presumptive thread - used for futile wakeup throttling
   Thread * volatile _Responsible; // 目的: 让_Responsible上保存的线程 在苦苦拿不到锁的时候，使用带时间的park，方便下次快速被OS唤醒；而不是其他霸道锁的线程唤醒。
@@ -167,6 +169,7 @@ class ObjectMonitor {
                                     // at stop-the-world time.  See deflate_idle_monitors().
                                     // _count is approximately |_WaitSet| + |_EntryList|
  protected:
+  // 调用wait()时 的条件等待队列
   ObjectWaiter * volatile _WaitSet; // LL of threads wait()ing on the monitor
   volatile jint  _waiters;          // number of waiting threads
  private:
