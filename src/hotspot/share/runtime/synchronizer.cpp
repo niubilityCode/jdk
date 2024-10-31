@@ -670,26 +670,27 @@ static markOop ReadStableMark(oop obj) {
 //   There are simple ways to "diffuse" the middle address bits over the
 //   generated hashCode values:
 
+// java对象的hashcode 5种算法 (肯定是根据某个论文参考来的)，默认 hashCode = 5, 在globals.hpp中配置的
 static inline intptr_t get_next_hash(Thread * Self, oop obj) {
   intptr_t value = 0;
-  if (hashCode == 0) {
+  if (hashCode == 0) { // 随机数
     // This form uses global Park-Miller RNG.
     // On MP system we'll have lots of RW access to a global, so the
     // mechanism induces lots of coherency traffic.
-    value = os::random();
-  } else if (hashCode == 1) {
+    value = os::random(); 
+  } else if (hashCode == 1) { // obj地址偏移，再异或运算
     // This variation has the property of being stable (idempotent)
     // between STW operations.  This can be useful in some of the 1-0
     // synchronization schemes.
     intptr_t addrBits = cast_from_oop<intptr_t>(obj) >> 3;
     value = addrBits ^ (addrBits >> 5) ^ GVars.stwRandom;
-  } else if (hashCode == 2) {
+  } else if (hashCode == 2) { // 写死的1
     value = 1;            // for sensitivity testing
   } else if (hashCode == 3) {
-    value = ++GVars.hcSequence;
-  } else if (hashCode == 4) {
+    value = ++GVars.hcSequence; // 自增序列
+  } else if (hashCode == 4) { // 地址相关
     value = cast_from_oop<intptr_t>(obj);
-  } else {
+  } else { // 一堆运算...
     // Marsaglia's xor-shift scheme with thread-specific state
     // This is probably the best overall implementation -- we'll
     // likely make this the default in future releases.
