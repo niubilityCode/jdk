@@ -1533,7 +1533,7 @@ void ObjectMonitor::wait(jlong millis, bool interruptible, TRAPS) {
         // Intentionally empty
       } else if (node._notified == 0) {
         if (millis <= 0) {
-          Self->_ParkEvent->park();
+          Self->_ParkEvent->park(); // 阻塞
         } else {
           ret = Self->_ParkEvent->park(millis);
         }
@@ -1561,7 +1561,9 @@ void ObjectMonitor::wait(jlong millis, bool interruptible, TRAPS) {
     // highly unlikely).  If the following LD fetches a stale TS_WAIT value
     // then we'll acquire the lock and then re-fetch a fresh TState value.
     // That is, we fail toward safety.
-
+    // 能走到这一步，说明当前线程刚被唤醒了，有两种唤醒情况：
+    // 1. 被其他线程调用notify()/notifyAll() 唤醒当前线程，此时 node.TState == ObjectWaiter::TS_ENTER 或者 ObjectWaiter::TS_CXQ
+    // 2. 或者自身是 带有时间的park，到时间被OS唤醒，此时 node.TState == ObjectWaiter::TS_WAIT
     if (node.TState == ObjectWaiter::TS_WAIT) {
       Thread::SpinAcquire(&_WaitSetLock, "WaitSet - unlink");
       if (node.TState == ObjectWaiter::TS_WAIT) {

@@ -720,6 +720,7 @@ intptr_t ObjectSynchronizer::FastHashCode(Thread * Self, oop obj) {
     // been checked to make sure they can handle a safepoint. The
     // added check of the bias pattern is to avoid useless calls to
     // thread-local storage.
+    // 1. 若有偏向锁，则撤销。因为偏向锁的头部存储了线程id，而hashcode公用该存储位置，所以二者互斥的。
     if (obj->mark()->has_bias_pattern()) {
       // Handle for oop obj in case of STW safepoint
       Handle hobj(Self, obj);
@@ -727,6 +728,7 @@ intptr_t ObjectSynchronizer::FastHashCode(Thread * Self, oop obj) {
       assert(Universe::verify_in_progress() ||
              !SafepointSynchronize::is_at_safepoint(),
              "biases should not be seen by VM thread here");
+      // 撤销偏向锁
       BiasedLocking::revoke_and_rebias(hobj, false, JavaThread::current());
       obj = hobj();
       assert(!obj->mark()->has_bias_pattern(), "biases should be revoked by now");
@@ -750,6 +752,9 @@ intptr_t ObjectSynchronizer::FastHashCode(Thread * Self, oop obj) {
   // object should remain ineligible for biased locking
   assert(!mark->has_bias_pattern(), "invariant");
 
+  // 2. 若为普通对象(无锁对象)，
+  //    2.1 若存在hashcode，则直接返回
+  //    2.2 若不存在hashcode，则计算一个，放在obj的header上
   if (mark->is_neutral()) {
     hash = mark->hash();              // this is a normal header
     if (hash) {                       // if it has hash, just return it
@@ -766,6 +771,8 @@ intptr_t ObjectSynchronizer::FastHashCode(Thread * Self, oop obj) {
     // into heavy weight monitor. We could add more code here
     // for fast path, but it does not worth the complexity.
   } else if (mark->has_monitor()) {
+    // 3. 若有重量级锁，则再次判断若重量级锁中 存放了hashcode，则直接返回。
+    //    3.1 怎么少一个条件呢?--若重量级锁中不存在hashcode，为什么不计算一个呢？---走下面的锁膨胀流程。
     monitor = mark->monitor();
     temp = monitor->header();
     assert(temp->is_neutral(), "invariant");
@@ -775,6 +782,7 @@ intptr_t ObjectSynchronizer::FastHashCode(Thread * Self, oop obj) {
     }
     // Skip to the following code to reduce code size
   } else if (Self->is_lock_owned((address)mark->locker())) {
+    // 4. 若为轻量级锁，则取出obj header中指向的 获取轻量级锁线程的 栈上的 BasicObjectLock地址，然后从中获取到obj的hashcode
     temp = mark->displaced_mark_helper(); // this is a lightweight monitor owned
     assert(temp->is_neutral(), "invariant");
     hash = temp->hash();              // by current thread, check if the displaced
@@ -793,6 +801,7 @@ intptr_t ObjectSynchronizer::FastHashCode(Thread * Self, oop obj) {
   }
 
   // Inflate the monitor to set hash code
+  // 5. 锁升级，然后计算hashcode，然后cas设置到obj头部即可
   monitor = ObjectSynchronizer::inflate(Self, obj, inflate_cause_hash_code);
   // Load displaced header and check it has hash code
   mark = monitor->header();
